@@ -1,0 +1,37 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 16
+VisualStudioVersion = 16.0.31005.135
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "MIN", "MIN\MIN.csproj", "{6FB79A73-8C4D-41CF-978A-1BE8A94C4E48}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MIN.SerialPort", "MIN.SerialPort\MIN.SerialPort.csproj", "{DB8819EB-D2B7-4AAE-A699-BD200F2C113A}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MIN.Tests", "MIN.Tests\MIN.Tests.csproj", "{DF4DC5FE-2066-45D2-B783-57B2EFEE1958}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{6FB79A73-8C4D-41CF-978A-1BE8A94C4E48}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{6FB79A73-8C4D-41CF-978A-1BE8A94C4E48}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{6FB79A73-8C4D-41CF-978A-1BE8A94C4E48}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{6FB79A73-8C4D-41CF-978A-1BE8A94C4E48}.Release|Any CPU.Build.0 = Release|Any CPU
+		{DB8819EB-D2B7-4AAE-A699-BD200F2C113A}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{DB8819EB-D2B7-4AAE-A699-BD200F2C113A}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{DB8819EB-D2B7-4AAE-A699-BD200F2C113A}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{DB8819EB-D2B7-4AAE-A699-BD200F2C113A}.Release|Any CPU.Build.0 = Release|Any CPU
+		{DF4DC5FE-2066-45D2-B783-57B2EFEE1958}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{DF4DC5FE-2066-45D2-B783-57B2EFEE1958}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{DF4DC5FE-2066-45D2-B783-57B2EFEE1958}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{DF4DC5FE-2066-45D2-B783-57B2EFEE1958}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {E1248EB7-C500-457C-98B4-CD253E974F72}
+	EndGlobalSection
+EndGlobal
