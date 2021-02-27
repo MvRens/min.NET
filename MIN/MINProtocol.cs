@@ -78,20 +78,37 @@ namespace MIN
             this.logger = logger;
             this.timeProvider = timeProvider ?? new SystemTimeProvider();
 
-            Reset();
-
-            var workerThread = new Thread(RunWorker);
-            workerThread.Start();
         }
 
 
         /// <inheritdoc />
         public void Dispose()
         {
-            workerThreadCancellation?.Cancel();
+            Stop();
         }
 
 
+        /// <inheritdoc />
+        public void Start()
+        {
+            Stop();
+            Reset();
+
+            workerThreadCancellation = new CancellationTokenSource();
+            var workerThread = new Thread(() => RunWorker(workerThreadCancellation));
+            workerThread.Start();
+        }
+
+
+        /// <inheritdoc />
+        public void Stop()
+        {
+            // The thread will dispose of the CancellationTokenSource after it's cancelled
+            workerThreadCancellation?.Cancel();
+            workerThreadCancellation = null;
+        }
+
+        
         /// <inheritdoc />
         public MINStats Stats()
         {
@@ -139,10 +156,15 @@ namespace MIN
 
 
         /// <inheritdoc />
-        public event FrameEventHandler OnFrame;
-        // TODO OnConnect
-        // TODO OnDisconnect
+        public event MINConnectionStateEventHandler OnConnected;
 
+        /// <inheritdoc />
+        public event MINConnectionStateEventHandler OnDisconnected;
+
+        /// <inheritdoc />
+        public event MINFrameEventHandler OnFrame;
+
+        
         // ReSharper disable once SuggestBaseTypeForParameter - I like the explicitness
         private static void ValidateFrame(byte id, byte[] payload)
         {
@@ -183,16 +205,19 @@ namespace MIN
         private byte? nackOutstanding;
 
 
-        private void RunWorker()
+        private void RunWorker(CancellationTokenSource cancellationTokenSource)
         {
-            while (!workerThreadCancellation.IsCancellationRequested)
+            // TODO connect transport, handle OnDisconnect
+            transport.Connect(cancellationTokenSource.Token);
+            OnConnected?.Invoke(this, EventArgs.Empty);
+
+            
+            while (!cancellationTokenSource.Token.IsCancellationRequested)
             {
                 try
                 {
                     DateTime now;
                     bool remoteActive;
-
-                    // TODO connect transport
 
                     var yield = true;
                     try
@@ -255,10 +280,10 @@ namespace MIN
 
                     // Wait for the transport to have data available or fall back to polling, or any of the above timeouts
                     if (transport is IMINAwaitableTransport awaitableTransport)
-                        waitHandles = new[] { transportQueueEvent.WaitHandle, awaitableTransport.DataAvailable(), workerThreadCancellation.Token.WaitHandle };
+                        waitHandles = new[] { transportQueueEvent.WaitHandle, awaitableTransport.DataAvailable(), cancellationTokenSource.Token.WaitHandle };
                     else
                     {
-                        waitHandles = new[] { transportQueueEvent.WaitHandle, workerThreadCancellation.Token.WaitHandle };
+                        waitHandles = new[] { transportQueueEvent.WaitHandle, cancellationTokenSource.Token.WaitHandle };
 
                         if (timeout == Timeout.Infinite || timeout > 10)
                             timeout = 10;
@@ -273,8 +298,7 @@ namespace MIN
                 }
             }
 
-            workerThreadCancellation.Dispose();
-            workerThreadCancellation = null;
+            cancellationTokenSource.Dispose();
         }
 
 
@@ -382,11 +406,12 @@ namespace MIN
                             }
                             : new[] { receivingFrame.IDControl, (byte) receivingFrame.PayloadBuffer.Length });
 
-                        computedChecksum = Crc32CAlgorithm.Append(computedChecksum, receivingFrame.PayloadBuffer);
+                        computedChecksum = Crc32Algorithm.Append(computedChecksum, receivingFrame.PayloadBuffer);
                         if (receivingFrame.Checksum != computedChecksum)
                         {
-                            logger?.LogWarning("CRC mismatch: expected=0x{:08x}, actual=0x{:08x}), frame dropped",
-                                computedChecksum.ToString("x8"), receivingFrame.Checksum.ToString("x8"));
+                            logger?.LogWarning("CRC mismatch: expected=0x{expectedCRC}, actual=0x{actualCRC}), id={id}, sequence={sequence}, payload={payload}, frame dropped",
+                                computedChecksum.ToString("x8"), receivingFrame.Checksum.ToString("x8"), 
+                                receivingFrame.IDControl, receivingFrame.Sequence, BitConverter.ToString(receivingFrame.PayloadBuffer));
 
                             // Frame fails checksum, is dropped
                             receiveState = ReceiveState.SearchingForSOF;
@@ -703,7 +728,7 @@ namespace MIN
         {
             lastReceivedFrame = timeProvider.Now();
 
-            OnFrame?.Invoke(this, new FrameEventArgs(frame.Id, frame.Payload));
+            OnFrame?.Invoke(this, new MINFrameEventArgs(frame.Id, frame.Payload));
         }
 
 

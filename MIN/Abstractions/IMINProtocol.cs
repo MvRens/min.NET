@@ -6,7 +6,7 @@ namespace MIN.Abstractions
     /// <summary>
     /// Contains information about an incoming frame.
     /// </summary>
-    public class FrameEventArgs : EventArgs
+    public class MINFrameEventArgs : EventArgs
     {
         /// <summary>
         /// The Id of the frame as specified by the sender.
@@ -20,7 +20,7 @@ namespace MIN.Abstractions
 
 
         /// <inheritdoc />
-        public FrameEventArgs(byte id, byte[] payload)
+        public MINFrameEventArgs(byte id, byte[] payload)
         {
             Id = id;
             Payload = payload;
@@ -30,11 +30,19 @@ namespace MIN.Abstractions
 
 
     /// <summary>
+    /// An event handler which is called when the connection state changes.
+    /// </summary>
+    /// <param name="sender">The MINProtocol implementation from which the frame originates</param>
+    /// <param name="e">Contains nothing of interest</param>
+    public delegate void MINConnectionStateEventHandler(object sender, EventArgs e);
+
+    
+    /// <summary>
     /// An event handler which is called when an incoming frame arrives.
     /// </summary>
     /// <param name="sender">The MINProtocol implementation from which the frame originates</param>
     /// <param name="e">Information about the incoming frame</param>
-    public delegate void FrameEventHandler(object sender, FrameEventArgs e);
+    public delegate void MINFrameEventHandler(object sender, MINFrameEventArgs e);
     
     
     /// <summary>
@@ -42,6 +50,17 @@ namespace MIN.Abstractions
     /// </summary>
     public interface IMINProtocol : IDisposable
     {
+        /// <summary>
+        /// Starts connecting to the transport and receiving frames.
+        /// </summary>
+        void Start();
+
+        /// <summary>
+        /// Disconnects from the transport and stops sending and receiving frames.
+        /// </summary>
+        void Stop();
+        
+        
         /// <summary>
         /// Returns statistics on the MIN protocol since the last start.
         /// </summary>
@@ -67,9 +86,19 @@ namespace MIN.Abstractions
 
 
         /// <summary>
+        /// An event which is called when a connection has been established.
+        /// </summary>
+        event MINConnectionStateEventHandler OnConnected;
+
+        /// <summary>
+        /// An event which is called when the transport is disconnected.
+        /// </summary>
+        event MINConnectionStateEventHandler OnDisconnected;
+
+        /// <summary>
         /// An event which is called when an incoming frame arrives.
         /// </summary>
-        event FrameEventHandler OnFrame;
+        event MINFrameEventHandler OnFrame;
     }
     
     

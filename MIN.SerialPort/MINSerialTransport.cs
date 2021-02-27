@@ -38,7 +38,14 @@ namespace MIN.SerialPort
         /// <inheritdoc />
         public void Dispose()
         {
-            serialPort.Dispose();
+            try
+            {
+                serialPort.Dispose();
+            }
+            catch
+            {
+                // Ignored
+            }
         }
 
 
@@ -55,6 +62,9 @@ namespace MIN.SerialPort
         /// <inheritdoc />
         public void Write(byte[] data, CancellationToken cancellationToken)
         {
+            if (!serialPort.IsOpen)
+                return;
+            
             serialPort.Write(data, 0, data.Length);
         }
 
@@ -62,6 +72,9 @@ namespace MIN.SerialPort
         /// <inheritdoc />
         public byte[] ReadAll()
         {
+            if (!serialPort.IsOpen)
+                return Array.Empty<byte>();
+            
             var bytesToRead = serialPort.BytesToRead;
             if (bytesToRead == 0)
                 return Array.Empty<byte>();
