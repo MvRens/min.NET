@@ -52,10 +52,10 @@ namespace MIN.SerialPort
         /// <inheritdoc />
         public void Connect(CancellationToken cancellationToken)
         {
-            // TODO retry
+            // TODO (must have - port from old source) retry
             serialPort.Open();
             
-            // TODO detect disconnects and report back
+            // TODO (must have - port from old source) detect disconnects and report back
         }
 
 

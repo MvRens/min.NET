@@ -246,7 +246,7 @@ namespace MIN
             var waitHandlesArray = waitHandles.ToArray();
 
 
-            // TODO connect transport, handle OnDisconnect
+            // TODO (must have) connect transport, handle OnDisconnect
             transport.Connect(cancellationTokenSource.Token);
             OnConnected?.Invoke(this, EventArgs.Empty);
 
@@ -475,22 +475,18 @@ namespace MIN
 
                     case ReceiveState.ReceivingEOF:
                         if (dataByte == MINWire.EofByte)
-                        {
                             // Frame received OK, pass up frame for handling
                             ProcessReceivedFrame(cancellationToken);
-                        }
                         else
-                        {
-                            // Log "No EOF received, dropping frame"
-                        }
+                            logger?.LogWarning("Expected EOF, got {byte}, frame dropped", dataByte.ToString("x2"));
 
                         // Look for next frame
                         receiveState = ReceiveState.SearchingForSOF;
                         break;
 
                     default:
-                        // min_logger.error("Unexpected state, state machine reset")
                         // Should never get here but in case we do just reset
+                        logger?.LogError("Unexpected state {state}, state machine reset", receiveState);
                         receiveState = ReceiveState.SearchingForSOF;
                         break;
                 }
@@ -627,7 +623,7 @@ namespace MIN
 
             InternalReset(true);
             
-            // TODO raise OnReset event?
+            // TODO (nice to have) raise OnReset event?
         }
 
 
@@ -678,7 +674,7 @@ namespace MIN
             if (!nackOutstanding.HasValue && transportStashed.Count > 0)
             {
                 // We can send a NACK to ask for those too, starting with the earliest sequence number
-                // TODO the reference implementation also takes the lowest sequence number, but is that always correct with it wrapping? I can't quite wrap my head around it (pun intended)
+                // Note: the reference implementation also takes the lowest sequence number, but is that always correct with it wrapping? I can't quite wrap my head around it (pun intended)
                 var earliestSequence = transportStashed.Keys.Min();
 
                 // Check it's within the window size from us
@@ -728,10 +724,7 @@ namespace MIN
                 }
 
                 // Hang on to this frame because we will join it up later with the missing ones that are re-sent
-                if (transportStashed.ContainsKey(receivingFrame.Sequence))
-                    transportStashed[receivingFrame.Sequence] = frame;
-                else
-                    transportStashed.Add(receivingFrame.Sequence, frame);
+                transportStashed[receivingFrame.Sequence] = frame;
 
                 logger?.LogDebug("MIN application frame stashed: id={id}, sequence={sequence}",
                     receivingFrame.IDControl, receivingFrame.Sequence);
