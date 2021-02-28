@@ -1,6 +1,5 @@
 ﻿using System;
 using System.Threading;
-using System.Threading.Tasks;
 
 namespace MIN.Abstractions
 {
@@ -18,6 +17,12 @@ namespace MIN.Abstractions
         /// </summary>
         /// <param name="cancellationToken">A CancellationToken which will be signalled when the MINProtocol is disposed.</param>
         void Connect(CancellationToken cancellationToken);
+
+        /// <summary>
+        /// Called when a reset is requested by the host. The transport should clear any receive buffers,
+        /// but not the write buffers.
+        /// </summary>
+        void Reset();
 
         /// <summary>
         /// Write the raw data to the transport layer.

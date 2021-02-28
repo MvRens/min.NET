@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Threading;
+using System.Threading.Tasks;
 using FluentAssertions;
 using MIN.Abstractions;
 
@@ -56,6 +57,11 @@ namespace MIN.Tests.Mock
         }
 
         
+        public void Reset()
+        {
+        }
+
+
         public void Write(byte[] data, CancellationToken cancellationToken)
         {
             lock (expectedQueuesLock)

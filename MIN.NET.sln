@@ -9,6 +9,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MIN.SerialPort", "MIN.Seria
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MIN.Tests", "MIN.Tests\MIN.Tests.csproj", "{DF4DC5FE-2066-45D2-B783-57B2EFEE1958}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MIN.TestEcho", "MIN.TestEcho\MIN.TestEcho.csproj", "{139E062C-6A0F-4AD6-9000-86D5EE5D671E}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -27,6 +29,10 @@ Global
 		{DF4DC5FE-2066-45D2-B783-57B2EFEE1958}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{DF4DC5FE-2066-45D2-B783-57B2EFEE1958}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{DF4DC5FE-2066-45D2-B783-57B2EFEE1958}.Release|Any CPU.Build.0 = Release|Any CPU
+		{139E062C-6A0F-4AD6-9000-86D5EE5D671E}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{139E062C-6A0F-4AD6-9000-86D5EE5D671E}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{139E062C-6A0F-4AD6-9000-86D5EE5D671E}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{139E062C-6A0F-4AD6-9000-86D5EE5D671E}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

@@ -86,6 +86,16 @@ namespace MIN.Abstractions
 
 
         /// <summary>
+        /// Sends a RESET to the other side to say that we are going away and clears out the FIFO and receive queues.
+        /// </summary>
+        /// <returns>
+        /// A Task which completes after the reset has been sent. Preferably wait for this task before calling
+        /// QueueFrame, otherwise there is a chance those frames will be lost.
+        /// </returns>
+        Task Reset();
+
+
+        /// <summary>
         /// An event which is called when a connection has been established.
         /// </summary>
         event MINConnectionStateEventHandler OnConnected;

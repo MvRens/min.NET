@@ -58,7 +58,15 @@ namespace MIN.SerialPort
             // TODO detect disconnects and report back
         }
 
-        
+
+        /// <inheritdoc />
+        public void Reset()
+        {
+            if (serialPort.IsOpen)
+                serialPort.DiscardInBuffer();
+        }
+
+
         /// <inheritdoc />
         public void Write(byte[] data, CancellationToken cancellationToken)
         {

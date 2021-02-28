@@ -55,6 +55,9 @@ namespace MIN
         private readonly IMINTimeProvider timeProvider;
 
         private CancellationTokenSource workerThreadCancellation = new CancellationTokenSource();
+        private readonly ManualResetEventSlim sendResetEvent = new ManualResetEventSlim();
+        private readonly object resetCompletedLock = new object();
+        private TaskCompletionSource<bool> resetCompleted;
 
         private readonly object statsLock = new object();
         private readonly MINStats stats = new MINStats();
@@ -92,7 +95,7 @@ namespace MIN
         public void Start()
         {
             Stop();
-            Reset();
+            InternalReset(true);
 
             workerThreadCancellation = new CancellationTokenSource();
             var workerThread = new Thread(() => RunWorker(workerThreadCancellation));
@@ -156,6 +159,25 @@ namespace MIN
 
 
         /// <inheritdoc />
+        public Task Reset()
+        {
+            logger?.LogDebug("Signalling RESET");
+            Task resetTask;
+
+            lock (resetCompletedLock)
+            {
+                if (resetCompleted == null)
+                    resetCompleted = new TaskCompletionSource<bool>();
+
+                resetTask = resetCompleted.Task;
+            }
+            
+            sendResetEvent.Set();
+            return resetTask;
+        }
+
+
+        /// <inheritdoc />
         public event MINConnectionStateEventHandler OnConnected;
 
         /// <inheritdoc />
@@ -207,6 +229,23 @@ namespace MIN
 
         private void RunWorker(CancellationTokenSource cancellationTokenSource)
         {
+            var waitHandles = new List<WaitHandle>
+            {
+                transportQueueEvent.WaitHandle,
+                sendResetEvent.WaitHandle,
+                cancellationTokenSource.Token.WaitHandle
+            };
+            
+            
+            var usePolling = false;
+            if (transport is IMINAwaitableTransport awaitableTransport)
+                waitHandles.Add(awaitableTransport.DataAvailable());
+            else
+                usePolling = true;
+
+            var waitHandlesArray = waitHandles.ToArray();
+
+
             // TODO connect transport, handle OnDisconnect
             transport.Connect(cancellationTokenSource.Token);
             OnConnected?.Invoke(this, EventArgs.Empty);
@@ -222,10 +261,30 @@ namespace MIN
                     var yield = true;
                     try
                     {
+                        if (sendResetEvent.IsSet)
+                        {
+                            logger?.LogDebug("Sending RESET");
+                            var resetFrame = new MINFrame(MINWire.Reset, Array.Empty<byte>(), true);
+
+                            WriteFrameData(resetFrame, 0, cancellationTokenSource.Token);
+                            WriteFrameData(resetFrame, 0, cancellationTokenSource.Token);
+
+                            transport.Reset();
+                            InternalReset(false);
+                            
+                            sendResetEvent.Reset();
+
+                            lock (resetCompletedLock)
+                            {
+                                resetCompleted?.TrySetResult(true);
+                                resetCompleted = null;
+                            }
+                        }
+                        
                         var incomingData = transport.ReadAll();
                         if (incomingData.Length > 0)
                         {
-                            ProcessIncomingData(incomingData);
+                            ProcessIncomingData(incomingData, cancellationTokenSource.Token);
                             yield = false;
                         }
 
@@ -233,7 +292,7 @@ namespace MIN
                         var queuedFrame = GetNextQueuedFrame();
                         if (queuedFrame != null)
                         {
-                            if (ProcessQueuedFrame(queuedFrame))
+                            if (ProcessQueuedFrame(queuedFrame, cancellationTokenSource.Token))
                                 FrameSent(queuedFrame);
 
                             yield = false;
@@ -244,7 +303,7 @@ namespace MIN
                         remoteActive = now - lastReceivedFrame < IdleTimeout;
 
                         if (now - lastAck > AckRetransmitTimeout && remoteActive)
-                            SendAck();
+                            SendAck(cancellationTokenSource.Token);
                     }
                     catch (OperationCanceledException)
                     {
@@ -259,9 +318,7 @@ namespace MIN
 
 
                     // Wait for the next thing to do to prevent an idle loop
-                    WaitHandle[] waitHandles;
                     var timeout = Timeout.Infinite;
-
 
                     if (remoteActive)
                         // Frames were received recently, the Ack is expected to be resent regularly.
@@ -279,17 +336,10 @@ namespace MIN
 
 
                     // Wait for the transport to have data available or fall back to polling, or any of the above timeouts
-                    if (transport is IMINAwaitableTransport awaitableTransport)
-                        waitHandles = new[] { transportQueueEvent.WaitHandle, awaitableTransport.DataAvailable(), cancellationTokenSource.Token.WaitHandle };
-                    else
-                    {
-                        waitHandles = new[] { transportQueueEvent.WaitHandle, cancellationTokenSource.Token.WaitHandle };
+                    if (usePolling && timeout == Timeout.Infinite || timeout > 10)
+                        timeout = 10;
 
-                        if (timeout == Timeout.Infinite || timeout > 10)
-                            timeout = 10;
-                    }
-
-                    WaitHandle.WaitAny(waitHandles, timeout);
+                    WaitHandle.WaitAny(waitHandlesArray, timeout);
                 }
                 catch (Exception e)
                 {
@@ -334,14 +384,13 @@ namespace MIN
         
 
         // ReSharper disable once ParameterTypeCanBeEnumerable.Local - I like the explicitness
-        private void ProcessIncomingData(byte[] data)
+        private void ProcessIncomingData(byte[] data, CancellationToken cancellationToken)
         {
             lastReceivedData = timeProvider.Now();
 
             if (LogDebugEnabled)
                 logger.LogDebug("Received bytes: {bytes}", BitConverter.ToString(data));
 
-            // TODO logging ?
             foreach (var dataByte in data)
             {
                 if (ContinueSearchForSOF(dataByte))
@@ -428,7 +477,7 @@ namespace MIN
                         if (dataByte == MINWire.EofByte)
                         {
                             // Frame received OK, pass up frame for handling
-                            ProcessReceivedFrame();
+                            ProcessReceivedFrame(cancellationToken);
                         }
                         else
                         {
@@ -493,7 +542,7 @@ namespace MIN
         /// The embedded version of this code does not implement NACKs: generally the MCU will not have enough memory to stash out-of-order
         /// frames for later reassembly.
         /// </summary>
-        private void ProcessReceivedFrame()
+        private void ProcessReceivedFrame(CancellationToken cancellationToken)
         {
             if (!receivingFrame.IsControlOrTransport)
             {
@@ -521,7 +570,7 @@ namespace MIN
                     break;
 
                 default:
-                    ProcessReceivedTransportFrame();
+                    ProcessReceivedTransportFrame(cancellationToken);
                     break;
             }
         }
@@ -530,7 +579,10 @@ namespace MIN
         private bool ProcessReceivedAckFrame()
         {
             if (transportAwaitingAck.Count == 0)
+            {
+                //nextReceiveSequence = receivingFrame.Sequence;
                 return false;
+            }
 
             // The ACK number indicates the serial number of the next packet wanted, so any previous packets can be marked off
             var ackedSequence = receivingFrame.Sequence;
@@ -573,11 +625,13 @@ namespace MIN
                 stats.ResetsReceived++;
             }
 
-            Reset();
+            InternalReset(true);
+            
+            // TODO raise OnReset event?
         }
 
 
-        private void ProcessReceivedTransportFrame()
+        private void ProcessReceivedTransportFrame(CancellationToken cancellationToken)
         {
             lastReceivedFrame = timeProvider.Now();
 
@@ -585,16 +639,16 @@ namespace MIN
                 true);
 
             if (receivingFrame.Sequence == nextReceiveSequence)
-                ProcessExpectedReceivedTransportFrame(frame);
+                ProcessExpectedReceivedTransportFrame(frame, cancellationToken);
             else
-                ProcessUnexpectedReceivedTransportFrame(frame);
+                ProcessUnexpectedReceivedTransportFrame(frame, cancellationToken);
         }
 
 
-        private void ProcessExpectedReceivedTransportFrame(MINFrame frame)
+        private void ProcessExpectedReceivedTransportFrame(MINFrame frame, CancellationToken cancellationToken)
         {
             logger?.LogDebug("MIN application frame received: id={id}, sequence={sequence})",
-                receivingFrame.IDControl, receivingFrame.Sequence);
+                frame.Id, receivingFrame.Sequence);
 
             FrameReceived(frame);
 
@@ -633,7 +687,7 @@ namespace MIN
                 if (missingFrames < ReceiveWindowSize)
                 {
                     nackOutstanding = earliestSequence;
-                    SendNack(earliestSequence);
+                    SendNack(earliestSequence, cancellationToken);
                 }
                 else
                 {
@@ -641,17 +695,17 @@ namespace MIN
                     logger?.LogError("Stale frames in the stashed area, resetting");
                     nackOutstanding = null;
                     transportStashed.Clear();
-                    SendAck();
+                    SendAck(cancellationToken);
                 }
             }
             else
             {
-                SendAck();
+                SendAck(cancellationToken);
             }
         }
 
 
-        private void ProcessUnexpectedReceivedTransportFrame(MINFrame frame)
+        private void ProcessUnexpectedReceivedTransportFrame(MINFrame frame, CancellationToken cancellationToken)
         {
             logger?.LogDebug("Unexpected MIN application frame received: id={id}, sequence={sequence})",
                 receivingFrame.IDControl, receivingFrame.Sequence);
@@ -665,7 +719,7 @@ namespace MIN
                 if (!nackOutstanding.HasValue)
                 {
                     // If we are missing specific frames then send a NACK to specifically request them
-                    SendNack(receivingFrame.Sequence);
+                    SendNack(receivingFrame.Sequence, cancellationToken);
                     nackOutstanding = receivingFrame.Sequence;
                 }
                 else
@@ -700,13 +754,14 @@ namespace MIN
         }
 
 
-        private void Reset()
+        private void InternalReset(bool resetUnsentQueue)
         {
-            lock (transportQueueLock)
-            {
-                transportQueue.Clear();
-                transportQueueEvent.Reset();
-            }
+            if (resetUnsentQueue)
+                lock (transportQueueLock)
+                {
+                    transportQueue.Clear();
+                    transportQueueEvent.Reset();
+                }
 
             transportAwaitingAck.Clear();
             transportStashed.Clear();
@@ -769,7 +824,7 @@ namespace MIN
         }
 
 
-        private bool ProcessQueuedFrame(QueuedFrame queuedFrame)
+        private bool ProcessQueuedFrame(QueuedFrame queuedFrame, CancellationToken cancellationToken)
         {
             var now = timeProvider.Now();
 
@@ -792,18 +847,18 @@ namespace MIN
                 stats.LastSentFrame = now;
             }
 
-            WriteFrameData(queuedFrame.Frame, queuedFrame.Sequence);
+            WriteFrameData(queuedFrame.Frame, queuedFrame.Sequence, cancellationToken);
             return true;
         }
 
 
-        private void WriteFrameData(MINFrame frame, byte sequence)
+        private void WriteFrameData(MINFrame frame, byte sequence, CancellationToken cancellationToken)
         {
             var data = MINFrameEncoder.GetFrameData(frame, sequence);
             if (LogDebugEnabled)
                 logger.LogDebug("Sending MIN frame, on wire bytes={bytes}", BitConverter.ToString(data));
 
-            transport.Write(data, workerThreadCancellation.Token);
+            transport.Write(data, cancellationToken);
         }
 
 
@@ -820,27 +875,29 @@ namespace MIN
         }
 
 
-        private void SendAck()
+        private void SendAck(CancellationToken cancellationToken)
         {
             logger?.LogDebug("Sending ACK: expected next sequence={sequence}", nextReceiveSequence);
 
             // For a regular ACK we request no additional retransmits
             WriteFrameData(
                 new MINFrame(MINWire.Ack, new[] { nextReceiveSequence }, true),
-                nextReceiveSequence);
+                nextReceiveSequence,
+                cancellationToken);
 
             lastAck = timeProvider.Now();
         }
 
 
-        private void SendNack(byte to)
+        private void SendNack(byte to, CancellationToken cancellationToken)
         {
             logger?.LogDebug("Sending ACK: sequence={sequence}, to={to}", nextReceiveSequence, to);
 
             // For a NACK we send an ACK but also request some frame retransmits
             WriteFrameData(
                 new MINFrame(MINWire.Ack, new[] { to }, true),
-                nextReceiveSequence);
+                nextReceiveSequence,
+                cancellationToken);
 
             lastAck = timeProvider.Now();
         }
