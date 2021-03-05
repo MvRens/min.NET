@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Diagnostics;
 using System.IO;
 using System.IO.Ports;
 using System.Threading;
@@ -10,10 +11,16 @@ namespace MIN.SerialPort
     /// Implements the MIN transport for a SerialPort connection.
     /// </summary>
     // ReSharper disable once UnusedMember.Global - public API
-    public class MINSerialTransport : IMINTransport
+    public class MINSerialTransport : IMINAwaitableTransport
     {
-        private readonly System.IO.Ports.SerialPort serialPort;
+        private System.IO.Ports.SerialPort serialPort;
+        private readonly Func<System.IO.Ports.SerialPort> serialPortFactory;
+        private readonly ManualResetEventSlim dataAvailableEvent = new ManualResetEventSlim();
 
+        /// <inheritdoc />
+        public event EventHandler OnDisconnected;
+
+        
         /// <summary>
         /// Initializes a new instance of the MIN serial transport.
         /// </summary>
@@ -27,7 +34,7 @@ namespace MIN.SerialPort
         public MINSerialTransport(string portName, int baudRate, Parity parity = Parity.None, int dataBits = 8, StopBits stopBits = StopBits.One, 
             Handshake handshake = Handshake.None, bool dtrEnable = false)
         {
-            serialPort = new System.IO.Ports.SerialPort(portName, baudRate, parity, dataBits, stopBits)
+            serialPortFactory = () => new System.IO.Ports.SerialPort(portName, baudRate, parity, dataBits, stopBits)
             {
                 Handshake = handshake,
                 DtrEnable = dtrEnable
@@ -40,7 +47,7 @@ namespace MIN.SerialPort
         {
             try
             {
-                serialPort.Dispose();
+                serialPort?.Dispose();
             }
             catch
             {
@@ -52,17 +59,59 @@ namespace MIN.SerialPort
         /// <inheritdoc />
         public void Connect(CancellationToken cancellationToken)
         {
-            // TODO (must have - port from old source) retry
-            serialPort.Open();
+            dataAvailableEvent.Reset();
             
-            // TODO (must have - port from old source) detect disconnects and report back
+            
+            while ((serialPort == null || !serialPort.IsOpen) && !cancellationToken.IsCancellationRequested)
+            {
+                try
+                {
+                    if (serialPort == null)
+                        serialPort = serialPortFactory();
+
+                    Debug.Assert(serialPort != null);
+                    serialPort.Open();
+
+                    serialPort.DataReceived += (sender, args) =>
+                    {
+                        dataAvailableEvent.Set();
+                    };
+                    
+                    serialPort.ErrorReceived += (sender, args) =>
+                    {
+                        Disconnect();
+                    };
+                }
+                catch
+                {
+                    Thread.Sleep(500);
+                }
+            }
+        }
+
+
+        private void Disconnect()
+        {
+            try
+            {
+                serialPort?.Dispose();
+            }
+            catch
+            {
+                // Ignored
+            }
+
+            serialPort = null;
+            dataAvailableEvent.Reset();
+
+            OnDisconnected?.Invoke(this, EventArgs.Empty);
         }
 
 
         /// <inheritdoc />
         public void Reset()
         {
-            if (serialPort.IsOpen)
+            if (serialPort != null && serialPort.IsOpen)
                 serialPort.DiscardInBuffer();
         }
 
@@ -70,28 +119,53 @@ namespace MIN.SerialPort
         /// <inheritdoc />
         public void Write(byte[] data, CancellationToken cancellationToken)
         {
-            if (!serialPort.IsOpen)
+            if (serialPort == null || !serialPort.IsOpen)
                 return;
-            
-            serialPort.Write(data, 0, data.Length);
+
+            try
+            {
+                serialPort.Write(data, 0, data.Length);
+            }
+            catch
+            {
+                Disconnect();
+            }
         }
 
 
         /// <inheritdoc />
         public byte[] ReadAll()
         {
-            if (!serialPort.IsOpen)
+            if (serialPort == null || !serialPort.IsOpen)
                 return Array.Empty<byte>();
-            
+
             var bytesToRead = serialPort.BytesToRead;
             if (bytesToRead == 0)
                 return Array.Empty<byte>();
 
-            var data = new byte[bytesToRead];
-            if (serialPort.Read(data, 0, bytesToRead) < bytesToRead)
-                throw new IOException("SerialPort lied about the available BytesToRead");
+            try
+            {
+                var data = new byte[bytesToRead];
+                if (serialPort.Read(data, 0, bytesToRead) < bytesToRead)
+                    throw new IOException("SerialPort lied about the available BytesToRead");
 
-            return data;
+                if (serialPort.BytesToRead == 0)
+                    dataAvailableEvent.Reset();
+
+                return data;
+            }
+            catch
+            {
+                Disconnect();
+                return Array.Empty<byte>();
+            }
+        }
+
+
+        /// <inheritdoc />
+        public WaitHandle DataAvailable()
+        {
+            return dataAvailableEvent.WaitHandle;
         }
     }
 }

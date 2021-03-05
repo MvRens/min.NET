@@ -186,7 +186,10 @@ namespace MIN
         /// <inheritdoc />
         public event MINFrameEventHandler OnFrame;
 
-        
+        /// <inheritdoc />
+        public event MINConnectionStateEventHandler OnReset;
+
+
         // ReSharper disable once SuggestBaseTypeForParameter - I like the explicitness
         private static void ValidateFrame(byte id, byte[] payload)
         {
@@ -246,15 +249,30 @@ namespace MIN
             var waitHandlesArray = waitHandles.ToArray();
 
 
-            // TODO (must have) connect transport, handle OnDisconnect
-            transport.Connect(cancellationTokenSource.Token);
-            OnConnected?.Invoke(this, EventArgs.Empty);
+            var transportConnected = false;
+            transport.OnDisconnected += (sender, args) =>
+            {
+                OnDisconnected?.Invoke(this, EventArgs.Empty);
+                transportConnected = false;
+            };
 
             
             while (!cancellationTokenSource.Token.IsCancellationRequested)
             {
                 try
                 {
+                    if (!transportConnected)
+                    {
+                        transport.Connect(cancellationTokenSource.Token);
+                        if (cancellationTokenSource.Token.IsCancellationRequested)
+                            break;
+                        
+                        OnConnected?.Invoke(this, EventArgs.Empty);
+                        transportConnected = true;
+                    }
+
+
+
                     DateTime now;
                     bool remoteActive;
 
@@ -281,6 +299,9 @@ namespace MIN
                             }
                         }
                         
+                        if (cancellationTokenSource.Token.IsCancellationRequested)
+                            break;
+                        
                         var incomingData = transport.ReadAll();
                         if (incomingData.Length > 0)
                         {
@@ -289,20 +310,30 @@ namespace MIN
                         }
 
 
-                        var queuedFrame = GetNextQueuedFrame();
-                        if (queuedFrame != null)
+                        if (cancellationTokenSource.Token.IsCancellationRequested)
+                            break;
+
+                        if (transportConnected)
                         {
-                            if (ProcessQueuedFrame(queuedFrame, cancellationTokenSource.Token))
-                                FrameSent(queuedFrame);
+                            var queuedFrame = GetNextQueuedFrame();
+                            if (queuedFrame != null)
+                            {
+                                if (ProcessQueuedFrame(queuedFrame, cancellationTokenSource.Token))
+                                    FrameSent(queuedFrame);
 
-                            yield = false;
+                                yield = false;
+                            }
                         }
+                        else
+                            yield = false;
 
+                        if (cancellationTokenSource.Token.IsCancellationRequested)
+                            break;
 
                         now = timeProvider.Now();
                         remoteActive = now - lastReceivedFrame < IdleTimeout;
 
-                        if (now - lastAck > AckRetransmitTimeout && remoteActive)
+                        if (now - lastAck > AckRetransmitTimeout && remoteActive && transportConnected)
                             SendAck(cancellationTokenSource.Token);
                     }
                     catch (OperationCanceledException)
@@ -311,7 +342,11 @@ namespace MIN
                     }
 
 
+                    
+                    if (cancellationTokenSource.Token.IsCancellationRequested)
+                        break;
 
+                    
                     // If any frames were processed, spin once more to check again
                     if (!yield)
                         continue;
@@ -622,8 +657,7 @@ namespace MIN
             }
 
             InternalReset(true);
-            
-            // TODO (nice to have) raise OnReset event?
+            OnReset?.Invoke(this, EventArgs.Empty);
         }
 
 

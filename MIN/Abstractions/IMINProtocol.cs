@@ -112,9 +112,14 @@ namespace MIN.Abstractions
         /// An event which is called when an incoming frame arrives.
         /// </summary>
         event MINFrameEventHandler OnFrame;
+
+        /// <summary>
+        /// An event which is called when a reset has been requested by the target.
+        /// </summary>
+        event MINConnectionStateEventHandler OnReset;
     }
-    
-    
+
+
     /// <summary>
     /// Statistics on the MIN protocol since the last start.
     /// </summary>

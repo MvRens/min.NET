@@ -36,6 +36,11 @@ namespace MIN.Abstractions
         /// </summary>
         /// <returns>The raw data available</returns>
         byte[] ReadAll();
+
+        /// <summary>
+        /// Event which is raised when the transport disconnects.
+        /// </summary>
+        event EventHandler OnDisconnected;
     }
 
 
