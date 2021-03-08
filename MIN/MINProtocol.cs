@@ -50,7 +50,7 @@ namespace MIN
         public TimeSpan FrameRetransmitTimeout { get; set; } = TimeSpan.FromMilliseconds(50);
 
 
-        private readonly IMINTransport transport;
+        private IMINTransport transport;
         private readonly ILogger logger;
         private readonly IMINTimeProvider timeProvider;
 
@@ -61,6 +61,7 @@ namespace MIN
 
         private readonly object statsLock = new object();
         private readonly MINStats stats = new MINStats();
+        private bool disposeTransport;
 
 
         // Null propagation is fine too, but I like skipping it if the log messages requires extra work to generate 
@@ -72,7 +73,7 @@ namespace MIN
         /// <summary>
         /// Creates a new instance of the MINProtocol
         /// </summary>
-        /// <param name="transport">The transport implementation to use</param>
+        /// <param name="transport">The transport implementation to use. The instance will be disposed when the new MINProtocol instance is disposed.</param>
         /// <param name="logger">A Microsoft.Extensions.Logging compatible implementation which receives protocol logging. If not provided, no logging will occur.</param>
         /// <param name="timeProvider">An implementation of IMINTimeProvider for testing purposes. Defaults to SystemTimeProvider.</param>
         public MINProtocol(IMINTransport transport, ILogger logger = null, IMINTimeProvider timeProvider = null)
@@ -87,6 +88,14 @@ namespace MIN
         /// <inheritdoc />
         public void Dispose()
         {
+            if (workerThreadCancellation == null)
+            {
+                // Already stopped, dispose the transport ourselves
+                transport?.Dispose();
+                return;
+            }
+
+            disposeTransport = true;
             Stop();
         }
 
@@ -232,158 +241,170 @@ namespace MIN
 
         private void RunWorker(CancellationTokenSource cancellationTokenSource)
         {
-            var waitHandles = new List<WaitHandle>
+            try
             {
-                transportQueueEvent.WaitHandle,
-                sendResetEvent.WaitHandle,
-                cancellationTokenSource.Token.WaitHandle
-            };
-            
-            
-            var usePolling = false;
-            if (transport is IMINAwaitableTransport awaitableTransport)
-                waitHandles.Add(awaitableTransport.DataAvailable());
-            else
-                usePolling = true;
-
-            var waitHandlesArray = waitHandles.ToArray();
-
-
-            var transportConnected = false;
-            transport.OnDisconnected += (sender, args) =>
-            {
-                OnDisconnected?.Invoke(this, EventArgs.Empty);
-                transportConnected = false;
-            };
-
-            
-            while (!cancellationTokenSource.Token.IsCancellationRequested)
-            {
-                try
+                var waitHandles = new List<WaitHandle>
                 {
-                    if (!transportConnected)
-                    {
-                        transport.Connect(cancellationTokenSource.Token);
-                        if (cancellationTokenSource.Token.IsCancellationRequested)
-                            break;
-                        
-                        OnConnected?.Invoke(this, EventArgs.Empty);
-                        transportConnected = true;
-                    }
+                    transportQueueEvent.WaitHandle,
+                    sendResetEvent.WaitHandle,
+                    cancellationTokenSource.Token.WaitHandle
+                };
 
 
+                var usePolling = false;
+                if (transport is IMINAwaitableTransport awaitableTransport)
+                    waitHandles.Add(awaitableTransport.DataAvailable());
+                else
+                    usePolling = true;
 
-                    DateTime now;
-                    bool remoteActive;
+                var waitHandlesArray = waitHandles.ToArray();
 
-                    var yield = true;
+
+                var transportConnected = false;
+                transport.OnDisconnected += (sender, args) =>
+                {
+                    OnDisconnected?.Invoke(this, EventArgs.Empty);
+                    transportConnected = false;
+                };
+
+
+                while (!cancellationTokenSource.Token.IsCancellationRequested)
+                {
                     try
                     {
-                        if (sendResetEvent.IsSet)
+                        if (!transportConnected)
                         {
-                            logger?.LogDebug("Sending RESET");
-                            var resetFrame = new MINFrame(MINWire.Reset, Array.Empty<byte>(), true);
+                            transport.Connect(cancellationTokenSource.Token);
+                            if (cancellationTokenSource.Token.IsCancellationRequested)
+                                break;
 
-                            WriteFrameData(resetFrame, 0, cancellationTokenSource.Token);
-                            WriteFrameData(resetFrame, 0, cancellationTokenSource.Token);
+                            OnConnected?.Invoke(this, EventArgs.Empty);
+                            transportConnected = true;
+                        }
 
-                            transport.Reset();
-                            InternalReset(false);
-                            
-                            sendResetEvent.Reset();
 
-                            lock (resetCompletedLock)
+
+                        DateTime now;
+                        bool remoteActive;
+
+                        var yield = true;
+                        try
+                        {
+                            if (sendResetEvent.IsSet)
                             {
-                                resetCompleted?.TrySetResult(true);
-                                resetCompleted = null;
+                                logger?.LogDebug("Sending RESET");
+                                var resetFrame = new MINFrame(MINWire.Reset, Array.Empty<byte>(), true);
+
+                                WriteFrameData(resetFrame, 0, cancellationTokenSource.Token);
+                                WriteFrameData(resetFrame, 0, cancellationTokenSource.Token);
+
+                                transport.Reset();
+                                InternalReset(false);
+
+                                sendResetEvent.Reset();
+
+                                lock (resetCompletedLock)
+                                {
+                                    resetCompleted?.TrySetResult(true);
+                                    resetCompleted = null;
+                                }
                             }
-                        }
-                        
-                        if (cancellationTokenSource.Token.IsCancellationRequested)
-                            break;
-                        
-                        var incomingData = transport.ReadAll();
-                        if (incomingData.Length > 0)
-                        {
-                            ProcessIncomingData(incomingData, cancellationTokenSource.Token);
-                            yield = false;
-                        }
 
+                            if (cancellationTokenSource.Token.IsCancellationRequested)
+                                break;
 
-                        if (cancellationTokenSource.Token.IsCancellationRequested)
-                            break;
-
-                        if (transportConnected)
-                        {
-                            var queuedFrame = GetNextQueuedFrame();
-                            if (queuedFrame != null)
+                            var incomingData = transport.ReadAll();
+                            if (incomingData.Length > 0)
                             {
-                                if (ProcessQueuedFrame(queuedFrame, cancellationTokenSource.Token))
-                                    FrameSent(queuedFrame);
-
+                                ProcessIncomingData(incomingData, cancellationTokenSource.Token);
                                 yield = false;
                             }
+
+
+                            if (cancellationTokenSource.Token.IsCancellationRequested)
+                                break;
+
+                            if (transportConnected)
+                            {
+                                var queuedFrame = GetNextQueuedFrame();
+                                if (queuedFrame != null)
+                                {
+                                    if (ProcessQueuedFrame(queuedFrame, cancellationTokenSource.Token))
+                                        FrameSent(queuedFrame);
+
+                                    yield = false;
+                                }
+                            }
+                            else
+                                yield = false;
+
+                            if (cancellationTokenSource.Token.IsCancellationRequested)
+                                break;
+
+                            now = timeProvider.Now();
+                            remoteActive = now - lastReceivedFrame < IdleTimeout;
+
+                            if (now - lastAck > AckRetransmitTimeout && remoteActive && transportConnected)
+                                SendAck(cancellationTokenSource.Token);
                         }
-                        else
-                            yield = false;
+                        catch (OperationCanceledException)
+                        {
+                            break;
+                        }
+
+
 
                         if (cancellationTokenSource.Token.IsCancellationRequested)
                             break;
 
-                        now = timeProvider.Now();
-                        remoteActive = now - lastReceivedFrame < IdleTimeout;
 
-                        if (now - lastAck > AckRetransmitTimeout && remoteActive && transportConnected)
-                            SendAck(cancellationTokenSource.Token);
+                        // If any frames were processed, spin once more to check again
+                        if (!yield)
+                            continue;
+
+
+                        // Wait for the next thing to do to prevent an idle loop
+                        var timeout = Timeout.Infinite;
+
+                        if (remoteActive)
+                            // Frames were received recently, the Ack is expected to be resent regularly.
+                            timeout = (int) Math.Max(0, (AckRetransmitTimeout - (now - lastAck)).TotalMilliseconds);
+
+
+                        var oldestFrame = transportAwaitingAck.FirstOrDefault();
+                        if (oldestFrame != null)
+                        {
+                            // There are unacknowledged frames, it is expected to be resent regularly.
+                            var timeUntilResend = (int) (FrameRetransmitTimeout - (now - oldestFrame.LastSentTime))
+                                .TotalMilliseconds;
+                            if (timeout == Timeout.Infinite || timeout > timeUntilResend)
+                                timeout = timeUntilResend;
+                        }
+
+
+                        // Wait for the transport to have data available or fall back to polling, or any of the above timeouts
+                        if (usePolling && timeout == Timeout.Infinite || timeout > 10)
+                            timeout = 10;
+
+                        WaitHandle.WaitAny(waitHandlesArray, timeout);
                     }
-                    catch (OperationCanceledException)
+                    catch (Exception e)
                     {
-                        break;
+                        logger?.LogError(e, "Unhandled exception in MIN protocol worker thread: {message}", e.Message);
+                        Thread.Sleep(500);
                     }
-
-
-                    
-                    if (cancellationTokenSource.Token.IsCancellationRequested)
-                        break;
-
-                    
-                    // If any frames were processed, spin once more to check again
-                    if (!yield)
-                        continue;
-
-
-                    // Wait for the next thing to do to prevent an idle loop
-                    var timeout = Timeout.Infinite;
-
-                    if (remoteActive)
-                        // Frames were received recently, the Ack is expected to be resent regularly.
-                        timeout = (int)Math.Max(0, (AckRetransmitTimeout - (now - lastAck)).TotalMilliseconds);
-
-
-                    var oldestFrame = transportAwaitingAck.FirstOrDefault();
-                    if (oldestFrame != null)
-                    {
-                        // There are unacknowledged frames, it is expected to be resent regularly.
-                        var timeUntilResend = (int)(FrameRetransmitTimeout - (now - oldestFrame.LastSentTime)).TotalMilliseconds;
-                        if (timeout == Timeout.Infinite || timeout > timeUntilResend)
-                            timeout = timeUntilResend;
-                    }
-
-
-                    // Wait for the transport to have data available or fall back to polling, or any of the above timeouts
-                    if (usePolling && timeout == Timeout.Infinite || timeout > 10)
-                        timeout = 10;
-
-                    WaitHandle.WaitAny(waitHandlesArray, timeout);
-                }
-                catch (Exception e)
-                {
-                    logger?.LogError(e, "Unhandled exception in MIN protocol worker thread: {message}", e.Message);
-                    Thread.Sleep(500);
                 }
             }
+            finally
+            {
+                cancellationTokenSource.Dispose();
 
-            cancellationTokenSource.Dispose();
+                if (disposeTransport)
+                {
+                    transport?.Dispose();
+                    transport = null;
+                }
+            }
         }
 
 
